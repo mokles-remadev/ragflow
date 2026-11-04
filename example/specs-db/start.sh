@@ -8,6 +8,7 @@
 # Optional:
 #   TEI_MODEL=BAAI/bge-small-en-v1.5  (default here; ~1.2 GB RAM, English)
 #   TEI_MODEL=BAAI/bge-m3             (multilingual, ~21 GB RAM)
+#   WEB_PORT=8080                     web UI port when 80 is taken (HTTPS moves to WEB_PORT+363, e.g. 8443)
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -31,6 +32,31 @@ MSG
   exit 1
 fi
 
+# Host ports: shell values override docker/.env for Compose interpolation.
+env_port() { local v; v="$(grep -E "^$1=" .env | head -1 | cut -d= -f2)"; echo "${!1:-$v}"; }
+if [[ -n "${WEB_PORT:-}" ]]; then
+  export SVR_WEB_HTTP_PORT="$WEB_PORT" SVR_WEB_HTTPS_PORT="$((WEB_PORT + 363))"
+fi
+web_port="$(env_port SVR_WEB_HTTP_PORT)"
+api_port="$(env_port SVR_HTTP_PORT)"
+
+# Fail early with a clear message instead of a half-started stack.
+# Skipped when the RAGFlow container already runs, since it then owns these ports itself.
+port_busy() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+if [[ -z "$("${compose[@]}" -f docker-compose.yml ps -q ragflow-cpu ragflow-gpu 2>/dev/null || true)" ]]; then
+  busy=()
+  for var in SVR_WEB_HTTP_PORT SVR_WEB_HTTPS_PORT SVR_HTTP_PORT ADMIN_SVR_HTTP_PORT; do
+    p="$(env_port "$var")"
+    if [[ -n "$p" ]] && port_busy "$p"; then busy+=("$p ($var)"); fi
+  done
+  if (( ${#busy[@]} > 0 )); then
+    echo "These host ports are already in use: ${busy[*]}" >&2
+    echo "Find the owner with: sudo ss -ltnp 'sport = :<port>'  (or: sudo lsof -i :<port>)" >&2
+    echo "Or move RAGFlow's web UI, e.g.: WEB_PORT=8080 $0" >&2
+    exit 1
+  fi
+fi
+
 # Elasticsearch (the default document engine) needs a higher mmap count on Linux.
 if [[ "$(uname -s)" == "Linux" ]]; then
   current="$(sysctl -n vm.max_map_count 2>/dev/null || echo 0)"
@@ -51,12 +77,11 @@ fi
 
 "${compose[@]}" -f docker-compose.yml up -d
 
-port="$(grep -E '^SVR_HTTP_PORT=' .env | cut -d= -f2)"
-port="${port:-9380}"
+port="${api_port:-9380}"
 echo "Waiting for the RAGFlow API on http://localhost:${port} …"
 for _ in $(seq 1 120); do
   if curl -fsS -o /dev/null "http://localhost:${port}/api/v1/system/ping" 2>/dev/null; then
-    echo "RAGFlow is up: open http://localhost"
+    echo "RAGFlow is up: open http://localhost$([[ "$web_port" == 80 ]] || echo ":$web_port")"
     echo "Next: sign up, set an embedding model (Model providers), create an API key (avatar → API), then run ingest.sh."
     exit 0
   fi

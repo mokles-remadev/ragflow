@@ -36,11 +36,19 @@ WITH_TEI=1 example/specs-db/start.sh
 
 For multilingual specs, use `TEI_MODEL=BAAI/bge-m3`, which needs about 21 GB RAM.
 
+If port 80 is already taken (Apache, nginx, another container), move the web UI. The script checks for busy ports before it starts anything.
+
+```bash
+WEB_PORT=8080 WITH_TEI=1 example/specs-db/start.sh   # UI at http://localhost:8080, HTTPS on 8443
+```
+
+The API and MCP endpoint stay on port 9380.
+
 If you can reach other hosts from this machine, first change `ADMIN_DEFAULT_PASSWORD` in `docker/.env`.
 
 ## 2. One-time UI setup
 
-1. Open <http://localhost> and register. The first account you create is yours.
+1. Open <http://localhost> (or `http://localhost:$WEB_PORT`) and register. The first account you create is yours.
 2. Under **Model providers**, set the default **embedding** model. With `WITH_TEI=1`, the local TEI model is already wired in. Retrieval doesn't need a chat LLM.
 3. Click your avatar, open **API**, and create a key:
 
