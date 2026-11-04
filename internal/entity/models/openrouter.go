@@ -35,6 +35,45 @@ type OpenRouterModel struct {
 	baseModel BaseModel
 }
 
+// openRouterCredentials unpacks the stored api_key. When the instance sets a
+// provider order, the UI stores api_key as a JSON object:
+//
+//	{"api_key": "...", "provider_order": "anthropic, openai"}
+//
+// Otherwise api_key is the plain key and no provider order applies. A bundle
+// that is never unwrapped sends the whole JSON object as the Bearer token and
+// every call fails authentication.
+func openRouterCredentials(apiConfig *APIConfig) (apiKey string, providerOrder []string) {
+	if apiConfig == nil || apiConfig.ApiKey == nil {
+		return "", nil
+	}
+	key := strings.TrimSpace(*apiConfig.ApiKey)
+	if !strings.HasPrefix(key, "{") {
+		return key, nil
+	}
+	var bundle struct {
+		APIKey        string `json:"api_key"`
+		ProviderOrder string `json:"provider_order"`
+	}
+	if err := json.Unmarshal([]byte(key), &bundle); err != nil {
+		return key, nil
+	}
+	for _, provider := range strings.Split(bundle.ProviderOrder, ",") {
+		if provider = strings.TrimSpace(provider); provider != "" {
+			providerOrder = append(providerOrder, provider)
+		}
+	}
+	return strings.TrimSpace(bundle.APIKey), providerOrder
+}
+
+// applyProviderOrder adds OpenRouter's provider routing preference to a
+// chat or embedding request when the instance configures one.
+func applyProviderOrder(reqBody map[string]interface{}, apiConfig *APIConfig) {
+	if _, order := openRouterCredentials(apiConfig); len(order) > 0 {
+		reqBody["provider"] = map[string]interface{}{"order": order}
+	}
+}
+
 // NewOpenRouterModel creates a new OpenRouter AI model instance
 func NewOpenRouterModel(baseURL map[string]string, urlSuffix URLSuffix) *OpenRouterModel {
 	return &OpenRouterModel{
@@ -42,8 +81,27 @@ func NewOpenRouterModel(baseURL map[string]string, urlSuffix URLSuffix) *OpenRou
 			BaseURL:    baseURL,
 			URLSuffix:  urlSuffix,
 			httpClient: common.GetSSRFHTTPClient(),
+			// The Bearer token is the bundle's api_key, not the stored
+			// JSON object.
+			authHeader: func(cfg *APIConfig) (string, string) {
+				apiKey, _ := openRouterCredentials(cfg)
+				return "Authorization", "Bearer " + apiKey
+			},
 		},
 	}
+}
+
+// APIConfigCheck requires the bundle's api_key, not the raw stored value, so
+// an instance that only filled in the provider order fails here instead of
+// sending an empty Bearer token.
+func (o *OpenRouterModel) APIConfigCheck(apiConfig *APIConfig) error {
+	if o.baseModel.AllowEmptyAPIKey {
+		return nil
+	}
+	if apiKey, _ := openRouterCredentials(apiConfig); apiKey == "" {
+		return fmt.Errorf("api key is required")
+	}
+	return nil
 }
 
 func (o *OpenRouterModel) NewInstance(baseURL map[string]string) ModelDriver {
@@ -55,7 +113,7 @@ func (o *OpenRouterModel) Name() string {
 }
 
 func (o *OpenRouterModel) ChatWithMessages(ctx context.Context, modelName string, messages []Message, apiConfig *APIConfig, chatModelConfig *ChatConfig, modelUsage *common.ModelUsage) (*ChatResponse, error) {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
 	if len(messages) == 0 {
@@ -67,6 +125,7 @@ func (o *OpenRouterModel) ChatWithMessages(ctx context.Context, modelName string
 		return nil, err
 	}
 	reqBody := buildRequestBody(chatModelConfig, modelName, messages, false)
+	applyProviderOrder(reqBody, apiConfig)
 
 	if chatModelConfig != nil {
 		if chatModelConfig.Effort != nil {
@@ -85,7 +144,7 @@ func (o *OpenRouterModel) ChatWithMessages(ctx context.Context, modelName string
 }
 
 func (o *OpenRouterModel) ChatStreamlyWithSender(ctx context.Context, modelName string, messages []Message, apiConfig *APIConfig, modelConfig *ChatConfig, modelUsage *common.ModelUsage, sender func(*string, *string) error) error {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return err
 	}
 
@@ -109,6 +168,7 @@ func (o *OpenRouterModel) ChatStreamlyWithSender(ctx context.Context, modelName 
 
 	reqBody := buildRequestBody(modelConfig, modelName, messages, true)
 	reqBody["stream_options"] = map[string]any{"include_usage": true}
+	applyProviderOrder(reqBody, apiConfig)
 
 	if modelConfig != nil {
 		if modelConfig.Thinking != nil {
@@ -144,7 +204,7 @@ type OpenRouterEmbeddingResponse struct {
 }
 
 func (o *OpenRouterModel) Embed(ctx context.Context, modelName *string, request EmbedRequest, apiConfig *APIConfig, embeddingConfig *EmbeddingConfig, modelUsage *common.ModelUsage) ([]EmbeddingData, error) {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
 
@@ -168,6 +228,7 @@ func (o *OpenRouterModel) Embed(ctx context.Context, modelName *string, request 
 	if embeddingConfig != nil && embeddingConfig.Dimension > 0 {
 		reqBody["dimensions"] = embeddingConfig.Dimension
 	}
+	applyProviderOrder(reqBody, apiConfig)
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
@@ -183,7 +244,7 @@ func (o *OpenRouterModel) Embed(ctx context.Context, modelName *string, request 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	o.baseModel.applyAuth(req, apiConfig)
 
 	resp, err := o.baseModel.httpClient.Do(req)
 	if err != nil {
@@ -248,7 +309,7 @@ type OpenRouterRerankResponse struct {
 }
 
 func (o *OpenRouterModel) Rerank(ctx context.Context, modelName *string, request RerankRequest, apiConfig *APIConfig, rerankConfig *RerankConfig, modelUsage *common.ModelUsage) (*RerankResponse, error) {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
 	documents := request.Documents
@@ -291,7 +352,7 @@ func (o *OpenRouterModel) Rerank(ctx context.Context, modelName *string, request
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	o.baseModel.applyAuth(req, apiConfig)
 
 	resp, err := o.baseModel.httpClient.Do(req)
 	if err != nil {
@@ -351,7 +412,7 @@ func openRouterAudioFormat(file string, asrConfig *ASRConfig) string {
 
 // TranscribeAudio transcribe audio
 func (o *OpenRouterModel) TranscribeAudio(ctx context.Context, modelName *string, file *string, apiConfig *APIConfig, asrConfig *ASRConfig, modelUsage *common.ModelUsage) (*ASRResponse, error) {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
 	if modelName == nil || *modelName == "" {
@@ -406,7 +467,7 @@ func (o *OpenRouterModel) TranscribeAudio(ctx context.Context, modelName *string
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	o.baseModel.applyAuth(req, apiConfig)
 
 	resp, err := o.baseModel.httpClient.Do(req)
 	if err != nil {
@@ -437,7 +498,7 @@ func (o *OpenRouterModel) TranscribeAudioWithSender(ctx context.Context, modelNa
 
 // AudioSpeech convert text to audio
 func (o *OpenRouterModel) AudioSpeech(ctx context.Context, modelName *string, audioContent *string, apiConfig *APIConfig, ttsConfig *TTSConfig, modelUsage *common.ModelUsage) (*TTSResponse, error) {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
 	if audioContent == nil || *audioContent == "" {
@@ -478,7 +539,7 @@ func (o *OpenRouterModel) AudioSpeech(ctx context.Context, modelName *string, au
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	o.baseModel.applyAuth(req, apiConfig)
 
 	resp, err := o.baseModel.httpClient.Do(req)
 	if err != nil {
@@ -513,7 +574,7 @@ func (o *OpenRouterModel) ParseFile(ctx context.Context, modelName *string, cont
 }
 
 func (o *OpenRouterModel) ListModels(ctx context.Context, apiConfig *APIConfig) ([]ListModelResponse, error) {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
 
@@ -539,7 +600,7 @@ func (o *OpenRouterModel) ListModels(ctx context.Context, apiConfig *APIConfig) 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	o.baseModel.applyAuth(req, apiConfig)
 
 	resp, err := o.baseModel.httpClient.Do(req)
 	if err != nil {
@@ -570,7 +631,7 @@ func (o *OpenRouterModel) ListModels(ctx context.Context, apiConfig *APIConfig) 
 }
 
 func (o *OpenRouterModel) Balance(ctx context.Context, apiConfig *APIConfig) (map[string]interface{}, error) {
-	if err := o.baseModel.APIConfigCheck(apiConfig); err != nil {
+	if err := o.APIConfigCheck(apiConfig); err != nil {
 		return nil, err
 	}
 
@@ -588,7 +649,7 @@ func (o *OpenRouterModel) Balance(ctx context.Context, apiConfig *APIConfig) (ma
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", *apiConfig.ApiKey))
+	o.baseModel.applyAuth(req, apiConfig)
 
 	resp, err := o.baseModel.httpClient.Do(req)
 	if err != nil {
