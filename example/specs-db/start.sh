@@ -14,7 +14,22 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root/docker"
 
 command -v docker >/dev/null || { echo "docker is required" >&2; exit 1; }
-docker compose version >/dev/null || { echo "docker compose v2 is required" >&2; exit 1; }
+# Prefer the Compose v2 plugin; fall back to a standalone docker-compose binary if it is v2+.
+if docker compose version >/dev/null 2>&1; then
+  compose=(docker compose)
+elif command -v docker-compose >/dev/null && docker-compose version --short 2>/dev/null | grep -qE '^v?[2-9]'; then
+  compose=(docker-compose)
+else
+  cat >&2 <<'MSG'
+Docker Compose v2 is required (neither `docker compose` nor a v2 `docker-compose` was found).
+Install it, then re-run this script:
+  Debian/Ubuntu with Docker's apt repo:  sudo apt-get install -y docker-compose-plugin
+  Any Linux:  mkdir -p ~/.docker/cli-plugins && \
+    curl -fSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+      -o ~/.docker/cli-plugins/docker-compose && chmod +x ~/.docker/cli-plugins/docker-compose
+MSG
+  exit 1
+fi
 
 # Elasticsearch (the default document engine) needs a higher mmap count on Linux.
 if [[ "$(uname -s)" == "Linux" ]]; then
@@ -34,7 +49,7 @@ if [[ "${WITH_TEI:-0}" == "1" ]]; then
   echo "Profiles: $COMPOSE_PROFILES  (TEI_MODEL=$TEI_MODEL)"
 fi
 
-docker compose -f docker-compose.yml up -d
+"${compose[@]}" -f docker-compose.yml up -d
 
 port="$(grep -E '^SVR_HTTP_PORT=' .env | cut -d= -f2)"
 port="${port:-9380}"
@@ -47,5 +62,5 @@ for _ in $(seq 1 120); do
   fi
   sleep 5
 done
-echo "RAGFlow did not become healthy within 10 minutes. Check: docker compose -f docker/docker-compose.yml logs -f ragflow-cpu" >&2
+echo "RAGFlow did not become healthy within 10 minutes. Check: ${compose[*]} -f docker/docker-compose.yml logs -f ragflow-cpu" >&2
 exit 1
