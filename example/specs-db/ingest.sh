@@ -97,14 +97,22 @@ fi
 
 [[ "${WAIT:-1}" == "1" ]] || exit 0
 
-# 5. Wait for parsing to finish. Scanned PDFs on CPU can take a minute or more per page batch.
+# 5. Wait for parsing. Scanned PDFs on CPU can take a minute or more per page batch.
+# Counts come from the ingestion summary; a missing field is an error, never "done".
 echo "Waiting for parsing (Ctrl-C is safe; parsing continues server-side)…"
 while :; do
-  ds="$(api GET "/datasets?id=${dataset_id}&include_parsing_status=true" | jq -c '.[0]')"
-  read -r unstart running done_ fail < <(jq -r '[.unstart_count//0, .running_count//0, .done_count//0, .fail_count//0] | @tsv' <<<"$ds")
-  printf '\r  done=%s running=%s queued=%s failed=%s chunks=%s   ' \
-    "$done_" "$running" "$unstart" "$fail" "$(jq -r '.chunk_count//0' <<<"$ds")"
-  (( running == 0 && unstart == 0 )) && break
+  summary="$(api GET "/datasets/${dataset_id}/ingestions/summary")"
+  if ! counts="$(jq -er '[.doc_num, .status.unstart_count, .status.running_count,
+                         .status.done_count, .status.fail_count, .status.cancel_count,
+                         (.chunk_num // 0)]
+                        | if all(type == "number") then map(tostring) | join(" ") else false end' <<<"$summary")"; then
+    echo "Unexpected ingestion summary from the server: ${summary}" >&2
+    exit 1
+  fi
+  read -r total unstart running done_ fail cancel chunks <<<"$counts"
+  printf '\r  done=%s/%s running=%s queued=%s failed=%s stopped=%s chunks=%s   ' \
+    "$done_" "$total" "$running" "$unstart" "$fail" "$cancel" "$chunks"
+  (( running == 0 && unstart == 0 && done_ + fail + cancel >= total )) && break
   sleep 10
 done
 echo
@@ -113,4 +121,8 @@ if (( fail > 0 )); then
   list_docs '&run=FAILED' | jq -r '"  \(.name): \((.progress_msg // "") | split("\n") | map(select(length > 0)) | last // "")"'
   exit 2
 fi
-echo "All specs indexed. Dataset id: ${dataset_id}"
+if (( cancel > 0 )); then
+  echo "${cancel} document(s) were stopped; re-run this script to queue them again." >&2
+  exit 2
+fi
+echo "All ${total} specs indexed (${chunks} chunks). Dataset id: ${dataset_id}"
