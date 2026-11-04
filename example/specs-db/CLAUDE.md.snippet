@@ -1,0 +1,20 @@
+## Specification database
+
+Specifications (scanned and digital PDFs, OCR'd by RAGFlow DeepDoc) are available
+through the `specs` MCP server.
+
+- Before answering any question about requirements, tolerances, interfaces, test
+  procedures or standards, search the specs with `ragflow_retrieval`. Do not answer
+  spec questions from memory.
+- Call `ragflow_list_datasets` once to learn the dataset id, then pass `dataset_ids`
+  to keep results scoped to the specifications dataset.
+- Write the `question` as the requirement you are looking for ("maximum operating
+  temperature of the controller enclosure"), not as a single keyword. Set
+  `keyword: true` when searching for exact identifiers such as clause numbers,
+  part numbers or standard references (e.g. "IEC 61000-4-2").
+- Quote the retrieved text and cite the document name (and section/page when the
+  chunk shows it) for every requirement you state.
+- OCR can garble digits and units. If a value looks implausible, say so and quote
+  the raw chunk rather than silently correcting it.
+- If retrieval returns nothing relevant, say the specs do not cover it. Do not
+  invent a requirement.
