@@ -66,23 +66,30 @@ if [[ "$(uname -s)" == "Linux" ]]; then
   fi
 fi
 
+compose_files=(-f docker-compose.yml)
 if [[ "${WITH_TEI:-0}" == "1" ]]; then
   # Mirror docker/.env's COMPOSE_PROFILES and add the local embedding server.
   doc_engine="${DOC_ENGINE:-elasticsearch}"
   device="${DEVICE:-cpu}"
   export TEI_MODEL="${TEI_MODEL:-BAAI/bge-small-en-v1.5}"
   export COMPOSE_PROFILES="${doc_engine},${device},metadata-${METADATA_DB_PROFILE:-mysql},tei-${device}"
+  compose_files+=(-f "$repo_root/example/specs-db/compose.tei.yml")
   echo "Profiles: $COMPOSE_PROFILES  (TEI_MODEL=$TEI_MODEL)"
 fi
 
-"${compose[@]}" -f docker-compose.yml up -d
+"${compose[@]}" "${compose_files[@]}" up -d
 
 port="${api_port:-9380}"
 echo "Waiting for the RAGFlow API on http://localhost:${port} …"
 for _ in $(seq 1 120); do
   if curl -fsS -o /dev/null "http://localhost:${port}/api/v1/system/ping" 2>/dev/null; then
     echo "RAGFlow is up: open http://localhost$([[ "$web_port" == 80 ]] || echo ":$web_port")"
-    echo "Next: sign up, set an embedding model (Model providers), create an API key (avatar → API), then run ingest.sh."
+    if [[ "${WITH_TEI:-0}" == "1" ]]; then
+      echo "Next: sign up, then Settings → Model providers → Set default models → Embedding: ${TEI_MODEL} (Builtin)."
+    else
+      echo "Next: sign up, then Settings → Model providers: add an embedding provider and pick it under Set default models."
+    fi
+    echo "Then create an API key (Settings → API) and run ingest.sh."
     exit 0
   fi
   sleep 5
