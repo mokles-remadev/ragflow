@@ -49,8 +49,11 @@ If you can reach other hosts from this machine, first change `ADMIN_DEFAULT_PASS
 ## 2. One-time UI setup
 
 1. Open <http://localhost> (or `http://localhost:$WEB_PORT`) and register. The first account you create is yours.
-2. Under **Model providers**, set the default **embedding** model. With `WITH_TEI=1`, the local TEI model is already wired in. Retrieval doesn't need a chat LLM.
-3. Click your avatar, open **API**, and create a key:
+2. Set the default embedding model: avatar → **Model providers** → **Set default models** → **Embedding**.
+   - With `WITH_TEI=1`, pick the **Builtin** model (`BAAI/bge-small-en-v1.5` by default). It is already running locally.
+   - Without TEI, first add a provider (OpenAI, Jina, Voyage, Ollama, …) under **Model providers**, then select its embedding model.
+   - Retrieval does not need a chat LLM.
+3. Avatar → **API** (`/user-setting/api`) → **API Key** → **Create new key**:
 
 ```bash
 export RAGFLOW_API_KEY=ragflow-...

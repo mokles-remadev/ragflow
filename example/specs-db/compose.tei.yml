@@ -1,0 +1,9 @@
+# Overlay used by start.sh when WITH_TEI=1.
+# docker/.env is the container's env_file and pins COMPOSE_PROFILES without a
+# tei-* profile, so RAGFlow would not list or route to the local TEI model.
+# `environment` wins over `env_file`, so pass the effective values through.
+services:
+  ragflow-cpu:
+    environment:
+      - COMPOSE_PROFILES=${COMPOSE_PROFILES}
+      - TEI_MODEL=${TEI_MODEL}
