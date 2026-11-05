@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"ragflow/internal/permission"
 	"ragflow/internal/service"
 	"ragflow/internal/service/document"
+	"strings"
 )
 
 // mcpRerankCandidatesCount is the fixed rerank candidate window sent with every
@@ -165,11 +167,16 @@ func mcpRetrieval(ctx context.Context, ds mcpDatasetService, userID string, req 
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	result, err := json.Marshal(mcpRetrievalResult(req, datasetIDs, resp, datasetNames, documentMetadata))
-	if err != nil {
+	// The result is read by a model as plain text. Default HTML escaping turns
+	// every '<' and '>' in table chunks into six-character \u003c / \u003e
+	// sequences, roughly tripling the size of HTML-table content.
+	var result bytes.Buffer
+	encoder := json.NewEncoder(&result)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(mcpRetrievalResult(req, datasetIDs, resp, datasetNames, documentMetadata)); err != nil {
 		return "", fmt.Errorf("failed to serialize retrieval result: %w", err)
 	}
-	return string(result), nil
+	return strings.TrimSuffix(result.String(), "\n"), nil
 }
 
 // fetchAllDatasetIDs pages through listPage collecting dataset IDs until the
@@ -210,11 +217,20 @@ func fetchAllDatasetIDs(listPage func(page, pageSize int) ([]map[string]interfac
 	return ids, nil
 }
 
-// mcpRetrievalResult preserves REST chunk fields while adding the MCP envelope.
+// isIndexOnlyChunkField reports chunk fields that exist only for the search
+// index: tokenized copies of text (content_ltks, title_tks, …) and embedding
+// vectors (q_<dim>_vec). They duplicate content in a form no MCP client can
+// use, and content_ltks alone is about as large as the chunk text.
+func isIndexOnlyChunkField(key string) bool {
+	return strings.HasSuffix(key, "_ltks") || strings.HasSuffix(key, "_tks") || strings.HasSuffix(key, "_vec")
+}
+
+// mcpRetrievalResult preserves REST chunk fields, except index-only ones, while adding the MCP envelope.
 func mcpRetrievalResult(req mcp.RetrievalRequest, datasetIDs []string, resp *service.SearchDatasetsResponse, names map[string]string, metadata map[string]map[string]any) map[string]any {
 	chunks := make([]map[string]any, 0, len(resp.Chunks))
 	for _, raw := range resp.Chunks {
 		chunk := maps.Clone(raw)
+		maps.DeleteFunc(chunk, func(key string, _ any) bool { return isIndexOnlyChunkField(key) })
 		id, _ := chunk["dataset_id"].(string)
 		if id == "" {
 			id, _ = chunk["kb_id"].(string)

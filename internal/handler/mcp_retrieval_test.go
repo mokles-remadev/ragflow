@@ -229,3 +229,34 @@ func sameIntPtr(got, want *int) bool {
 	}
 	return *got == *want
 }
+
+func TestMCPRetrievalEmitsCompactUnescapedChunks(t *testing.T) {
+	isolateKnowledgeCompilePublisher(t)
+	probe := &recordingDatasetService{response: &service.SearchDatasetsResponse{
+		Chunks: []map[string]any{{
+			"id":           "chunk-1",
+			"dataset_id":   "ds-1",
+			"content":      "<table><tr><td>DESIGN PRESSURE</td></tr></table>",
+			"content_ltks": "design pressur",
+		}},
+		Total: 1,
+	}}
+
+	result, err := mcpRetrieval(t.Context(), probe, "user-1", mcp.RetrievalRequest{DatasetIDs: []string{"ds-1"}, Question: "design pressure"})
+	if err != nil {
+		t.Fatalf("mcpRetrieval failed: %v", err)
+	}
+	if !strings.Contains(result, "<table><tr><td>DESIGN PRESSURE</td></tr></table>") {
+		t.Fatalf("table markup is not emitted verbatim: %s", result)
+	}
+	if strings.Contains(result, `\`+"u003c") || strings.Contains(result, "content_ltks") {
+		t.Fatalf("result carries escaped markup or index-only fields: %s", result)
+	}
+	if strings.HasSuffix(result, "\n") {
+		t.Fatalf("result has a trailing newline: %q", result)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+}
