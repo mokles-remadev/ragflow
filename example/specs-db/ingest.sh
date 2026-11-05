@@ -55,7 +55,18 @@ if [[ -z "$dataset_id" ]]; then
     --data "$(jq -n --arg name "$dataset_name" --arg lang "$language" --arg p "$parser_id" \
       '{name:$name, language:$lang, parse_type:1, parser_id:$p}')" | jq -r '.id')"
 fi
-echo "Dataset: ${dataset_name} (${dataset_id})"
+embedding="$(api GET "/datasets?id=${dataset_id}" | jq -r '.[0].embedding_model // empty')"
+if [[ -z "$embedding" ]]; then
+  cat >&2 <<MSG
+Dataset '${dataset_name}' has no embedding model, so parsing would OCR every page
+and then fail at the Tokenizer step ("encoder resolution returned nil").
+A dataset created before a default embedding model was set keeps an empty one.
+Fix it in the RAGFlow UI: Dataset '${dataset_name}' → Configuration → Embedding model,
+pick your model, Save, then re-run this script.
+MSG
+  exit 1
+fi
+echo "Dataset: ${dataset_name} (${dataset_id}), embedding model: ${embedding}"
 
 # list_docs [extra query] → one JSON doc per line, across all pages (server caps page_size at 100).
 list_docs() {
