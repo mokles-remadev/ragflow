@@ -49,11 +49,12 @@ func newOpenRouterForTest(baseURL string) *OpenRouterModel {
 	return NewOpenRouterModel(
 		map[string]string{"default": baseURL},
 		URLSuffix{
-			Chat:    "chat/completions",
-			Models:  "models",
-			ASR:     "audio/transcriptions",
-			TTS:     "audio/speech",
-			Balance: "credits",
+			Chat:      "chat/completions",
+			Models:    "models",
+			ASR:       "audio/transcriptions",
+			TTS:       "audio/speech",
+			Balance:   "credits",
+			Embedding: "embeddings",
 		},
 	)
 }
@@ -286,5 +287,87 @@ func TestOpenRouterChatStreamlyRequest(t *testing.T) {
 	}
 	if reasoning.String() != "think" {
 		t.Errorf("streamed reasoning=%q, want %q", reasoning.String(), "think")
+	}
+}
+
+// The UI stores api_key as {"api_key", "provider_order"} when a provider order
+// is set; the driver must send only the inner key and route by that order.
+const openRouterBundledKey = `{"api_key":"test-key","provider_order":" anthropic, ,openai "}`
+
+func TestOpenRouterEmbedUnwrapsBundledKeyAndSendsProviderOrder(t *testing.T) {
+	withSSRFBypass(t)
+	srv := newOpenRouterServer(t, "/embeddings", func(t *testing.T, r *http.Request, body map[string]interface{}, w http.ResponseWriter) {
+		provider, ok := body["provider"].(map[string]interface{})
+		if !ok {
+			t.Errorf("provider=%v, want object", body["provider"])
+			return
+		}
+		order, _ := json.Marshal(provider["order"])
+		if string(order) != `["anthropic","openai"]` {
+			t.Errorf("provider.order=%s", order)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{{"embedding": []float64{0.1, 0.2}, "index": 0}},
+		})
+	})
+	defer srv.Close()
+
+	apiKey := openRouterBundledKey
+	modelName := "openai/text-embedding-3-small"
+	got, err := newOpenRouterForTest(srv.URL).Embed(t.Context(), &modelName, EmbedRequest{Texts: []string{"test"}}, &APIConfig{ApiKey: &apiKey}, nil, nil)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Embedding) != 2 {
+		t.Fatalf("embeddings=%v", got)
+	}
+}
+
+func TestOpenRouterChatUnwrapsBundledKey(t *testing.T) {
+	withSSRFBypass(t)
+	srv := newOpenRouterServer(t, "/chat/completions", func(t *testing.T, r *http.Request, body map[string]interface{}, w http.ResponseWriter) {
+		if _, ok := body["provider"]; !ok {
+			t.Errorf("provider routing missing from chat request")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{"message": map[string]interface{}{"role": "assistant", "content": "hi"}}},
+		})
+	})
+	defer srv.Close()
+
+	apiKey := openRouterBundledKey
+	if _, err := newOpenRouterForTest(srv.URL).ChatWithMessages(t.Context(), "openai/gpt-4o-mini", []Message{{Role: "user", Content: "Hi"}}, &APIConfig{ApiKey: &apiKey}, nil, nil); err != nil {
+		t.Fatalf("ChatWithMessages: %v", err)
+	}
+}
+
+func TestOpenRouterPlainKeySendsNoProviderOrder(t *testing.T) {
+	withSSRFBypass(t)
+	srv := newOpenRouterServer(t, "/embeddings", func(t *testing.T, r *http.Request, body map[string]interface{}, w http.ResponseWriter) {
+		if _, ok := body["provider"]; ok {
+			t.Errorf("provider=%v, want absent", body["provider"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []map[string]interface{}{{"embedding": []float64{0.1}, "index": 0}},
+		})
+	})
+	defer srv.Close()
+
+	apiKey := "test-key"
+	modelName := "openai/text-embedding-3-small"
+	if _, err := newOpenRouterForTest(srv.URL).Embed(t.Context(), &modelName, EmbedRequest{Texts: []string{"test"}}, &APIConfig{ApiKey: &apiKey}, nil, nil); err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+}
+
+func TestOpenRouterAPIConfigCheckRequiresBundledKey(t *testing.T) {
+	model := newOpenRouterForTest("http://unused")
+	onlyOrder := `{"api_key":"","provider_order":"openai"}`
+	if err := model.APIConfigCheck(&APIConfig{ApiKey: &onlyOrder}); err == nil {
+		t.Fatal("APIConfigCheck accepted a bundle without api_key")
+	}
+	bundled := openRouterBundledKey
+	if err := model.APIConfigCheck(&APIConfig{ApiKey: &bundled}); err != nil {
+		t.Fatalf("APIConfigCheck: %v", err)
 	}
 }
