@@ -41,3 +41,29 @@ func TestMCPRetrievalResult(t *testing.T) {
 		t.Fatalf("empty: %s", b)
 	}
 }
+
+func TestMCPRetrievalResultDropsIndexOnlyFields(t *testing.T) {
+	raw := map[string]any{
+		"id":            "chunk",
+		"content":       "<table><tr><td>DESIGN PRESSURE</td></tr></table>",
+		"content_ltks":  "design pressur",
+		"title_tks":     "c 55",
+		"q_1536_vec":    []float64{0.1, 0.2},
+		"important_kwd": []string{"valve"},
+	}
+	result := mcpRetrievalResult(mcp.RetrievalRequest{Question: "q"}, nil, &service.SearchDatasetsResponse{Chunks: []map[string]any{raw}}, nil, nil)
+	chunk := result["chunks"].([]map[string]any)[0]
+	for _, key := range []string{"content_ltks", "title_tks", "q_1536_vec"} {
+		if _, ok := chunk[key]; ok {
+			t.Errorf("index-only field %q kept: %v", key, chunk)
+		}
+	}
+	for _, key := range []string{"id", "content", "important_kwd"} {
+		if _, ok := chunk[key]; !ok {
+			t.Errorf("field %q dropped: %v", key, chunk)
+		}
+	}
+	if _, ok := raw["content_ltks"]; !ok {
+		t.Fatal("mutated service response")
+	}
+}
