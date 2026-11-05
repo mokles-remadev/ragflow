@@ -36,13 +36,24 @@ WITH_TEI=1 example/specs-db/start.sh
 
 For multilingual specs, use `TEI_MODEL=BAAI/bge-m3`, which needs about 21 GB RAM.
 
+If port 80 is already taken (Apache, nginx, another container), move the web UI. The script checks for busy ports before it starts anything.
+
+```bash
+WEB_PORT=8080 WITH_TEI=1 example/specs-db/start.sh   # UI at http://localhost:8080, HTTPS on 8443
+```
+
+The API and MCP endpoint stay on port 9380.
+
 If you can reach other hosts from this machine, first change `ADMIN_DEFAULT_PASSWORD` in `docker/.env`.
 
 ## 2. One-time UI setup
 
-1. Open <http://localhost> and register. The first account you create is yours.
-2. Under **Model providers**, set the default **embedding** model. With `WITH_TEI=1`, the local TEI model is already wired in. Retrieval doesn't need a chat LLM.
-3. Click your avatar, open **API**, and create a key:
+1. Open <http://localhost> (or `http://localhost:$WEB_PORT`) and register. The first account you create is yours.
+2. Set the default embedding model: avatar → **Model providers** → **Set default models** → **Embedding**.
+   - With `WITH_TEI=1`, pick the **Builtin** model (`BAAI/bge-small-en-v1.5` by default). It is already running locally.
+   - Without TEI, first add a provider (OpenAI, Jina, Voyage, Ollama, …) under **Model providers**, then select its embedding model.
+   - Retrieval does not need a chat LLM.
+3. Avatar → **API** (`/user-setting/api`) → **API Key** → **Create new key**:
 
 ```bash
 export RAGFLOW_API_KEY=ragflow-...
