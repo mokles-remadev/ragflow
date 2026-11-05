@@ -37,6 +37,12 @@ command -v claude >/dev/null || {
   exit 0
 }
 
+# Re-running replaces the entry, so a rotated API key or changed URL takes effect.
+if claude mcp get "$name" >/dev/null 2>&1; then
+  echo "Replacing existing MCP server '${name}' (${scope} scope)"
+  claude mcp remove "$name" -s "$scope" >/dev/null 2>&1 || true
+fi
+
 if [[ "$scope" == "project" ]]; then
   # Single quotes keep ${RAGFLOW_API_KEY} unexpanded in .mcp.json.
   claude mcp add --scope project --transport http "$name" "$endpoint" \
